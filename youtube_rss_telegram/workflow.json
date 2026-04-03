@@ -1,0 +1,274 @@
+{
+  "name": "YouTube RSS 新片摘要推 Telegram",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "id": "a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d",
+      "name": "每 15 分钟检查",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-640, 0]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "/**\n * 工作流配置（请按需修改）\n * - rssList：每个 YouTube 频道的 RSS\n *   示例：https://www.youtube.com/feeds/videos.xml?channel_id=UCxxxx\n * - lookbackHours：只处理「发布时间」落在此窗口内的视频，避免首次运行刷旧片\n * - openaiModel：模型名（须与「OpenAI 摘要」凭据所用服务兼容）\n * - telegramChatId：你的 Telegram 数字 chat_id\n * API 地址在 n8n 的 OpenAI 凭据里配置（与飞书工作流相同）。\n */\nconst CONFIG = {\n  rssList: [\n    'https://www.youtube.com/feeds/videos.xml?channel_id=UCxxxxxxxxxxxxxxxxxxxxxx',\n  ],\n  lookbackHours: 24,\n  openaiModel: 'gpt-4o-mini',\n  telegramChatId: '123456789',\n};\n\nconst { rssList, ...rest } = CONFIG;\nreturn rssList\n  .map((u) => (u || '').trim())\n  .filter(Boolean)\n  .map((rssUrl) => ({ json: { rssUrl, config: rest } }));\n"
+      },
+      "id": "b2c3d4e5-f6a7-5b6c-9d0e-1f2a3b4c5d6e",
+      "name": "配置与展开 RSS",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-416, 0]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.rssUrl }}",
+        "options": {
+          "ignoreSSL": false
+        }
+      },
+      "id": "c3d4e5f6-a7b8-6c7d-0e1f-2a3b4c5d6e7f",
+      "name": "读取 RSS",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1.2,
+      "position": [-192, 0],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "const item = $json;\nconst cfg = item.config || $('配置与展开 RSS').first().json.config;\nconst link = typeof item.link === 'string' ? item.link : item.link?.__text || item.link?.href || '';\nconst title = item.title || '';\nconst pubDate = item.pubDate || item.isoDate || '';\n\nlet videoId = '';\nconst mWatch = link.match(/[?&]v=([a-zA-Z0-9_-]{11})/);\nconst mShort = link.match(/\\/shorts\\/([a-zA-Z0-9_-]{11})/);\nif (mWatch) videoId = mWatch[1];\nelse if (mShort) videoId = mShort[1];\n\nreturn [\n  {\n    json: {\n      videoId,\n      title,\n      link,\n      pubDate,\n      config: cfg,\n    },\n  },\n];\n"
+      },
+      "id": "d4e5f6a7-b8c9-7d8e-1f2a-3b4c5d6e7f8a",
+      "name": "规范化条目",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [32, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 },
+          "conditions": [
+            {
+              "id": "vid-ok",
+              "leftValue": "={{ $json.videoId }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "notEmpty", "singleValue": true }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "e5f6a7b8-c9d0-8e9f-2a3b-4c5d6e7f8a9b",
+      "name": "有 videoId",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [256, 0]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const items = $input.all();\nconst cfg = items[0]?.json?.config;\nconst lookbackMs = (cfg?.lookbackHours ?? 24) * 60 * 60 * 1000;\nconst cutoff = Date.now() - lookbackMs;\n\nconst byId = new Map();\nfor (const it of items) {\n  const j = it.json;\n  if (!j.videoId) continue;\n  const t = Date.parse(j.pubDate);\n  if (Number.isFinite(t) && t < cutoff) continue;\n  if (!byId.has(j.videoId)) byId.set(j.videoId, j);\n}\n\nreturn [...byId.values()].map((j) => ({ json: j }));\n"
+      },
+      "id": "f6a7b8c9-df1e-9fab-3c4d-5e6f7a8b9c0d",
+      "name": "时间窗去重",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, -80]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\nstaticData.seenVideoIds = staticData.seenVideoIds || {};\n\nconst out = [];\nfor (const it of $input.all()) {\n  const j = it.json;\n  if (!j.videoId) continue;\n  if (staticData.seenVideoIds[j.videoId]) continue;\n  out.push({ json: j });\n}\nreturn out;\n"
+      },
+      "id": "a7b8c9d0-e1f2-0b1c-4d5e-6f7a8b9c0d1e",
+      "name": "排除已推送",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [704, -80]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "/**\n * 从 YouTube 页面解析 captionTracks，拉取字幕 XML 并拼成纯文本。\n * 无字幕 / 尚未生成自动字幕时 transcript 为空 → 不写 seen，下一轮到齐后再推。\n */\n\nfunction extractPlayerResponse(html) {\n  const needles = ['var ytInitialPlayerResponse = ', 'ytInitialPlayerResponse = '];\n  for (const n of needles) {\n    const i = html.indexOf(n);\n    if (i === -1) continue;\n    let s = i + n.length;\n    // 跳过可能的空白与 JSON.parse( 包裹（保守：仍以 { 开头解析）\n    while (s < html.length && html[s] === ' ') s += 1;\n    if (html.startsWith('JSON.parse(\"', s)) {\n      // 复杂转义场景：跳过，换下一 needle\n      continue;\n    }\n    if (html[s] !== '{') continue;\n    let depth = 0;\n    let e = s;\n    for (; e < html.length; e++) {\n      const c = html[e];\n      if (c === '{') depth++;\n      else if (c === '}') {\n        depth--;\n        if (depth === 0) {\n          e++;\n          break;\n        }\n      }\n    }\n    try {\n      return JSON.parse(html.slice(s, e));\n    } catch (err) {\n      continue;\n    }\n  }\n  return null;\n}\n\nfunction pickCaptionTrack(tracks) {\n  if (!tracks?.length) return null;\n  const rank = (lang) => {\n    const l = (lang || '').toLowerCase();\n    if (l === 'zh' || l.startsWith('zh-hans')) return 0;\n    if (l.startsWith('zh')) return 1;\n    if (l === 'en' || l.startsWith('en-')) return 2;\n    return 5;\n  };\n  return [...tracks].sort((a, b) => rank(a.languageCode) - rank(b.languageCode))[0];\n}\n\nfunction xmlishToText(raw) {\n  return raw\n    .replace(/<[^>]+>/g, ' ')\n    .replace(/&amp;/g, '&')\n    .replace(/&lt;/g, '<')\n    .replace(/&gt;/g, '>')\n    .replace(/&quot;/g, '\"')\n    .replace(/&#39;/g, \"'\")\n    .replace(/\\s+/g, ' ')\n    .trim();\n}\n\nconst videoId = $json.videoId;\nconst title = $json.title;\nconst link = $json.link;\nconst pubDate = $json.pubDate;\nconst config = $json.config;\n\nlet transcript = '';\nlet transcriptLang = '';\n\ntry {\n  const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;\n  const html = await $helpers.httpRequest({\n    method: 'GET',\n    url: watchUrl,\n    headers: {\n      'User-Agent':\n        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',\n      'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',\n    },\n  });\n\n  const pr = extractPlayerResponse(html);\n  const tracks = pr?.captions?.playerCaptionsTracklistRenderer?.captionTracks;\n  const track = pickCaptionTrack(tracks);\n\n  if (track?.baseUrl) {\n    transcriptLang = track.languageCode || '';\n    const xml = await $helpers.httpRequest({\n      method: 'GET',\n      url: `${track.baseUrl}&fmt=srv3`,\n      headers: {\n        'User-Agent':\n          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',\n      },\n    });\n    transcript = xmlishToText(String(xml));\n  }\n} catch (e) {\n  transcript = '';\n}\n\nreturn [{ json: { videoId, title, link, pubDate, config, transcript, transcriptLang } }];\n"
+      },
+      "id": "b8c9d0e1-f2a3-1cde-5f6a-7b8c9d0e1f2a",
+      "name": "拉取逐字稿",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [928, -80]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 },
+          "conditions": [
+            {
+              "id": "tx-min-len",
+              "leftValue": "={{ ($json.transcript || '').length }}",
+              "rightValue": 80,
+              "operator": { "type": "number", "operation": "gt" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c9d0e1f2-a3b4-2def-6a7b-8c9d0e1f2a3b",
+      "name": "逐字稿已就绪",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1152, -80]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "const title = $json.title || '';\nconst link = $json.link || '';\nconst lang = $json.transcriptLang || 'unknown';\nconst transcript = String($json.transcript || '').slice(0, 48000);\n\nconst llmUserContent =\n  '视频标题：' +\n  title +\n  '\\n视频链接：' +\n  link +\n  '\\n字幕语言：' +\n  lang +\n  '\\n\\n以下为自动字幕拼合文本（可能含口误/同音错字）：\\n\\n' +\n  transcript;\n\nreturn [\n  {\n    json: {\n      videoId: $json.videoId,\n      title,\n      link,\n      transcriptLang: $json.transcriptLang,\n      config: $json.config,\n      llmUserContent,\n    },\n  },\n];\n"
+      },
+      "id": "b4c5d6e7-f8a9-7def-8abc-1234567890ab",
+      "name": "组装摘要请求",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1264, -176]
+    },
+    {
+      "parameters": {
+        "resource": "chat",
+        "model": "={{ $json.config.openaiModel || 'gpt-4o-mini' }}",
+        "prompt": {
+          "messages": [
+            {
+              "role": "system",
+              "content": "你是资深中文编辑。请用简体中文输出：先给出一句话结论，再用 3-6 条要点概括信息密度最高的内容。避免空话，不要编造视频里不存在的事实。若文本明显不完整，请如实说明可能遗漏。"
+            },
+            {
+              "content": "={{ $json.llmUserContent }}"
+            }
+          ]
+        },
+        "options": {},
+        "requestOptions": {}
+      },
+      "id": "d0e1f2a3-b4c5-3ef0-7b8c-9d0e1f2a3b4c",
+      "name": "OpenAI 摘要",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [1488, -176],
+      "credentials": {
+        "openAiApi": {
+          "id": "6PLIFSSUf9bkQFYH",
+          "name": "DMX_API account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "// 与飞书工作流一致：OpenAI 节点可能返回 message.content 或 choices[].message.content\nconst summary = (\n  $json.message?.content ||\n  $json.choices?.[0]?.message?.content ||\n  ''\n).trim();\nconst meta = $('拉取逐字稿').item.json;\nreturn [\n  {\n    json: {\n      videoId: meta.videoId,\n      title: meta.title,\n      link: meta.link,\n      summary,\n      transcriptLang: meta.transcriptLang,\n      config: meta.config,\n    },\n  },\n];\n"
+      },
+      "id": "e1f2a3b4-c5d6-4fa1-8c9d-0e1f2a3b4c5d",
+      "name": "合并推送字段",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1600, -176]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.config.telegramChatId }}",
+        "text": "={{ `🎬 ${$json.title}\\n\\n🔗 ${$json.link}\\n\\n📝 摘要：\\n${$json.summary}` }}",
+        "additionalFields": {
+          "disable_web_page_preview": true
+        }
+      },
+      "id": "f2a3b4c5-d6e7-5ab2-9d0e-1f2a3b4c5d6e",
+      "name": "Telegram 推送",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1824, -176]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\nstaticData.seenVideoIds = staticData.seenVideoIds || {};\nconst vid = $('合并推送字段').item.json.videoId;\nif (vid) staticData.seenVideoIds[vid] = { at: Date.now() };\nreturn $input.all();\n"
+      },
+      "id": "a3b4c5d6-e7f8-6bc3-a1b2-3c4d5e6f7a8b",
+      "name": "标记已处理",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2048, -176]
+    }
+  ],
+  "connections": {
+    "每 15 分钟检查": {
+      "main": [[{ "node": "配置与展开 RSS", "type": "main", "index": 0 }]]
+    },
+    "配置与展开 RSS": {
+      "main": [[{ "node": "读取 RSS", "type": "main", "index": 0 }]]
+    },
+    "读取 RSS": {
+      "main": [[{ "node": "规范化条目", "type": "main", "index": 0 }]]
+    },
+    "规范化条目": {
+      "main": [[{ "node": "有 videoId", "type": "main", "index": 0 }]]
+    },
+    "有 videoId": {
+      "main": [
+        [{ "node": "时间窗去重", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "时间窗去重": {
+      "main": [[{ "node": "排除已推送", "type": "main", "index": 0 }]]
+    },
+    "排除已推送": {
+      "main": [[{ "node": "拉取逐字稿", "type": "main", "index": 0 }]]
+    },
+    "拉取逐字稿": {
+      "main": [[{ "node": "逐字稿已就绪", "type": "main", "index": 0 }]]
+    },
+    "逐字稿已就绪": {
+      "main": [
+        [{ "node": "组装摘要请求", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "组装摘要请求": {
+      "main": [[{ "node": "OpenAI 摘要", "type": "main", "index": 0 }]]
+    },
+    "OpenAI 摘要": {
+      "main": [[{ "node": "合并推送字段", "type": "main", "index": 0 }]]
+    },
+    "合并推送字段": {
+      "main": [[{ "node": "Telegram 推送", "type": "main", "index": 0 }]]
+    },
+    "Telegram 推送": {
+      "main": [[{ "node": "标记已处理", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "active": false,
+  "meta": { "templateCredsSetupCompleted": false },
+  "pinData": {}
+}
