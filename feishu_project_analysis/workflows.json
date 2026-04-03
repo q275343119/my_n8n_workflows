@@ -1,0 +1,632 @@
+{
+    "name": "飞书-需求分析",
+    "nodes": [
+      {
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "feishu/feasibility-analysis",
+          "responseMode": "responseNode",
+          "options": {}
+        },
+        "id": "1a79289c-4519-4c17-ba84-a0fdf8c07eca",
+        "name": "Feishu Webhook1",
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 1,
+        "position": [
+          -1872,
+          80
+        ],
+        "webhookId": "5f35e27e-b925-45aa-9aef-b5adfe8529d3"
+      },
+      {
+        "parameters": {
+          "functionCode": "// 飞书消息回调(明文)解析 + 口令校验\n// 发布给朋友前：把 SECRET 改成你自己的口令\nconst SECRET = '<analysis>';\n\nlet body = $json.body ?? $json;\n// n8n 可能把 POST JSON 放在 body 字符串里，需解析后才能读到 challenge\nif (typeof body === 'string') {\n  try {\n    body = JSON.parse(body);\n  } catch (e) {\n    body = {};\n  }\n}\n\n// URL 验证：飞书会 POST type=url_verification 并带 challenge（与业务事件的 body 结构不同）\nif (body?.type === 'url_verification' && body?.challenge) {\n  return [{ json: { kind: 'verification', challenge: body.challenge } }];\n}\n// 兼容：仅 challenge、无 type 时也视为校验\nif (body?.challenge) {\n  return [{ json: { kind: 'verification', challenge: body.challenge } }];\n}\n\nconst event = body?.event ?? body?.data?.event;\nconst header = body?.header ?? body?.data?.header;\nconst eventType = header?.event_type;\n\nconst openId = event?.sender?.sender_id?.open_id;\nconst msgType = event?.message?.message_type;\nconst rawContent = event?.message?.content;\n\nlet text = '';\ntry {\n  if (typeof rawContent === 'string') {\n    const parsed = JSON.parse(rawContent);\n    text = parsed?.text ?? '';\n  }\n} catch (e) {\n  text = '';\n}\n\nif (!openId) {\n  return [{ json: { kind: 'error', error: '未获取到 open_id（请确认启用私聊消息事件）' } }];\n}\n\n// 不是消息事件就忽略（避免误触发）\nif (eventType && eventType !== 'im.message.receive_v1') {\n  return [{ json: { kind: 'ignore', open_id: openId, reason: 'not_message_event', event_type: eventType } }];\n}\n\nif (msgType !== 'text') {\n  return [{ json: { kind: 'reject', open_id: openId, error: '目前只支持文本消息（text）' } }];\n}\n\nconst trimmed = (text || '').trim();\nif (!trimmed) {\n  return [{ json: { kind: 'reject', open_id: openId, error: '消息为空，请发送：<口令> 空格 <需求>' } }];\n}\n\n// 口令格式：<口令> 空格 <需求>\nconst firstSpace = trimmed.indexOf(' ');\nconst provided = firstSpace === -1 ? trimmed : trimmed.slice(0, firstSpace);\nconst idea = firstSpace === -1 ? '' : trimmed.slice(firstSpace + 1).trim();\n\nif (provided !== SECRET) {\n  return [{ json: { kind: 'reject', open_id: openId, error: '口令不正确。请发送：<口令> 空格 <需求>' } }];\n}\nif (!idea) {\n  return [{ json: { kind: 'reject', open_id: openId, error: '缺少需求内容。请发送：<口令> 空格 <需求>' } }];\n}\n\nreturn [{ json: { kind: 'ok', open_id: openId, chatInput: idea } }];\n"
+        },
+        "id": "3b6b482a-33a3-4dc9-b3f6-fa401ef17eaf",
+        "name": "Parse Feishu Event1",
+        "type": "n8n-nodes-base.function",
+        "typeVersion": 1,
+        "position": [
+          -1648,
+          80
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "string": [
+              {
+                "value1": "={{ $json.kind }}",
+                "operation": "equal",
+                "value2": "verification"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "id": "21092ae3-a334-4d02-8a81-f7f9bf6a1aa2",
+        "name": "IF Verification1",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          -1424,
+          80
+        ]
+      },
+      {
+        "parameters": {
+          "respondWith": "json",
+          "responseBody": "={{ { challenge: $json.challenge } }}",
+          "options": {}
+        },
+        "id": "693b8900-a899-4b48-aa5d-8efd8e39470f",
+        "name": "Respond Challenge1",
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1,
+        "position": [
+          -1200,
+          176
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+          "authentication": "genericCredentialType",
+          "genericAuthType": "httpCustomAuth",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ {} }}",
+          "options": {
+            "response": {}
+          }
+        },
+        "id": "5e94b531-bb9f-4e3c-b2c6-7635ccfed9d3",
+        "name": "Feishu Tenant Token1",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4,
+        "position": [
+          -976,
+          -16
+        ],
+        "credentials": {
+          "httpCustomAuth": {
+            "id": "FtuNuwR0obk0XetW",
+            "name": "FeiShuApp Auth account"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "string": [
+              {
+                "value1": "={{ $node[\"Parse Feishu Event1\"].json.kind }}",
+                "operation": "equal",
+                "value2": "ok"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "id": "e3e6fba7-1553-4a80-8b08-bf90109645df",
+        "name": "IF OK1",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          -752,
+          -16
+        ]
+      },
+      {
+        "parameters": {
+          "values": {
+            "string": [
+              {
+                "name": "chatInput",
+                "value": "={{ $node[\"Parse Feishu Event1\"].json.chatInput }}"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "id": "a0359684-7ce4-43df-a559-e344a5f67b36",
+        "name": "Set Input1",
+        "type": "n8n-nodes-base.set",
+        "typeVersion": 2,
+        "position": [
+          -528,
+          -112
+        ]
+      },
+      {
+        "parameters": {
+          "resource": "chat",
+          "model": "gpt-4o-mini",
+          "prompt": {
+            "messages": [
+              {
+                "role": "system",
+                "content": "你是高级系统分析师。分析用户的项目需求，必须只返回以下JSON格式，不要任何其他内容：\n{\n  \"domain\": \"所属技术领域\",\n  \"project_type\": \"项目类型\",\n  \"key_technologies\": [\"核心技术1\", \"核心技术2\"],\n  \"goal\": \"项目核心目标\",\n  \"scale\": \"small或medium或large\"\n}"
+              },
+              {
+                "content": "={{ $json.chatInput }}"
+              }
+            ]
+          },
+          "options": {},
+          "requestOptions": {}
+        },
+        "id": "7ec61f0f-2c18-4eb3-ae63-b1fd7e53cfe0",
+        "name": "需求解析1",
+        "type": "n8n-nodes-base.openAi",
+        "typeVersion": 1,
+        "position": [
+          -304,
+          -112
+        ],
+        "credentials": {
+          "openAiApi": {
+            "id": "6PLIFSSUf9bkQFYH",
+            "name": "DMX_API account"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "functionCode": "const text = $json.message?.content || $json.choices?.[0]?.message?.content;\nif (!text) throw new Error('OpenAI 未返回内容');\nconst match = text.match(/\\{[\\s\\S]*\\}/);\nif (!match) throw new Error('未找到JSON，原始返回：' + text);\nreturn [{ json: JSON.parse(match[0]) }];"
+        },
+        "id": "ac16d7e8-9c95-4075-b1ee-821f219167ac",
+        "name": "解析JSON-需求1",
+        "type": "n8n-nodes-base.function",
+        "typeVersion": 1,
+        "position": [
+          -80,
+          -112
+        ]
+      },
+      {
+        "parameters": {
+          "resource": "chat",
+          "model": "gpt-4o-mini",
+          "prompt": {
+            "messages": [
+              {
+                "role": "system",
+                "content": "你是资深系统架构师和技术顾问。根据项目需求，进行全面深度的技术分析，必须只返回以下JSON格式，不要任何其他内容：\n{\n  \"architecture\": {\n    \"overview\": \"系统整体架构一句话描述\",\n    \"layers\": [\"层级描述1\", \"层级描述2\"],\n    \"modules\": [\n      {\"name\": \"模块名\", \"responsibility\": \"职责描述\", \"technology\": \"推荐技术\"}\n    ],\n    \"integration\": \"各模块间通信与集成方式\"\n  },\n  \"software_stack\": {\n    \"languages\": [{\"name\": \"语言名\", \"purpose\": \"使用场景\"}],\n    \"frameworks\": [{\"name\": \"框架名\", \"purpose\": \"使用场景\"}],\n    \"databases\": [{\"name\": \"数据库名\", \"purpose\": \"使用场景\"}],\n    \"tools\": [{\"name\": \"工具名\", \"purpose\": \"使用场景\"}],\n    \"third_party_apis\": [{\"name\": \"API或服务名\", \"purpose\": \"使用场景\"}]\n  },\n  \"hardware_requirements\": {\n    \"vr_devices\": [{\"name\": \"设备型号\", \"spec\": \"关键参数\", \"necessity\": \"必需或推荐\"}],\n    \"gpu\": {\"minimum\": \"最低配置\", \"recommended\": \"推荐配置\"},\n    \"cpu\": {\"minimum\": \"最低配置\", \"recommended\": \"推荐配置\"},\n    \"ram\": {\"minimum\": \"最低\", \"recommended\": \"推荐\"},\n    \"storage\": {\"minimum\": \"最低\", \"recommended\": \"推荐\"},\n    \"network\": \"网络带宽及延迟要求\"\n  },\n  \"difficulty\": {\n    \"overall_score\": 0.7,\n    \"breakdown\": [\n      {\"module\": \"模块名\", \"score\": 0.8, \"reason\": \"难点说明\"}\n    ],\n    \"key_challenges\": [\"核心挑战1\", \"核心挑战2\"]\n  },\n  \"risks\": [\n    {\"category\": \"风险类别\", \"level\": \"high或medium或low\", \"description\": \"风险描述\", \"mitigation\": \"应对策略\"}\n  ]\n}"
+              },
+              {
+                "content": "={{ JSON.stringify($json) }}"
+              }
+            ]
+          },
+          "options": {},
+          "requestOptions": {}
+        },
+        "id": "929b7006-b9b3-4040-9ff0-216629fb3c94",
+        "name": "深度技术分析1",
+        "type": "n8n-nodes-base.openAi",
+        "typeVersion": 1,
+        "position": [
+          144,
+          -112
+        ],
+        "credentials": {
+          "openAiApi": {
+            "id": "6PLIFSSUf9bkQFYH",
+            "name": "DMX_API account"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "functionCode": "const text = $json.message?.content || $json.choices?.[0]?.message?.content;\nif (!text) throw new Error('OpenAI 未返回内容');\nconst match = text.match(/\\{[\\s\\S]*\\}/);\nif (!match) throw new Error('未找到JSON，原始返回：' + text);\nreturn [{ json: JSON.parse(match[0]) }];"
+        },
+        "id": "f2df611e-bdab-4a68-b898-cc02cb818940",
+        "name": "解析JSON-分析1",
+        "type": "n8n-nodes-base.function",
+        "typeVersion": 1,
+        "position": [
+          368,
+          -112
+        ]
+      },
+      {
+        "parameters": {
+          "resource": "chat",
+          "model": "gpt-4o-mini",
+          "prompt": {
+            "messages": [
+              {
+                "role": "system",
+                "content": "你是专业的技术顾问，根据项目技术分析数据，生成一份完整的可行性分析 Markdown 报告。要求：内容具体有可操作性，技术建议精准（给出具体版本或型号），不要泛泛而谈。\n\n报告必须包含以下 7 个章节；每个章节标题单独占一行，使用 **加粗**（不要使用 # 或 ## 号标题，以便在飞书富文本中正确渲染）：\n**项目概述**\n**系统架构与实现路径**\n**技术选型清单**\n**硬件配置要求**\n**实现难度分析**\n**风险评估与应对策略**\n**分阶段实施计划**\n\n每个章节都要有实质内容，硬件部分要给出具体型号和价格范围参考，技术选型要说明为什么选这个。正文可使用列表、代码块、引用等标准 Markdown。"
+              },
+              {
+                "content": "={{ JSON.stringify($json) }}"
+              }
+            ]
+          },
+          "options": {},
+          "requestOptions": {}
+        },
+        "id": "6d77c7b3-ed2b-4496-b60b-a41a7f24f613",
+        "name": "生成报告1",
+        "type": "n8n-nodes-base.openAi",
+        "typeVersion": 1,
+        "position": [
+          592,
+          -112
+        ],
+        "credentials": {
+          "openAiApi": {
+            "id": "6PLIFSSUf9bkQFYH",
+            "name": "DMX_API account"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "functionCode": "const text = $json.message?.content || $json.choices?.[0]?.message?.content;\nif (!text) throw new Error('报告生成失败，未返回内容');\nreturn [{ json: { output: text } }];"
+        },
+        "id": "591b950f-c04c-4c9c-bc3e-20221c4a1702",
+        "name": "格式化输出1",
+        "type": "n8n-nodes-base.function",
+        "typeVersion": 1,
+        "position": [
+          816,
+          -112
+        ]
+      },
+      {
+        "parameters": {
+          "functionCode": "// 飞书要用 interactive 卡片里的 markdown 组件，客户端才会渲染 Markdown（msg_type=text/post 的 md 在部分端上易退化成纯文本）\nconst md = $json.output;\nif (typeof md !== 'string' || !md.trim()) {\n  throw new Error('报告内容为空，无法发送飞书卡片');\n}\n// 卡片/富文本单条 content 有体积上限（约 30KB），超长截断避免接口 400\nconst maxLen = 28000;\nlet bodyMd = md;\nif (bodyMd.length > maxLen) {\n  bodyMd = md.slice(0, maxLen) + '\\n\\n*(内容过长已截断，请缩短需求或分段分析)*';\n}\nconst card = {\n  schema: '2.0',\n  body: {\n    direction: 'vertical',\n    padding: '12px 12px 12px 12px',\n    elements: [\n      {\n        tag: 'markdown',\n        content: bodyMd,\n        text_align: 'left',\n        text_size: 'normal_v2',\n        margin: '0px 0px 0px 0px',\n      },\n    ],\n  },\n  header: {\n    title: { tag: 'plain_text', content: '需求可行性分析' },\n    subtitle: { tag: 'plain_text', content: '' },\n    template: 'blue',\n    padding: '12px 12px 12px 12px',\n  },\n};\nreturn [{ json: { feishuInteractiveContent: JSON.stringify(card) } }];"
+        },
+        "id": "4a2e6944-2a10-4baa-a9f5-d9a4784316df",
+        "name": "组装飞书卡片1",
+        "type": "n8n-nodes-base.function",
+        "typeVersion": 1,
+        "position": [
+          928,
+          -112
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Authorization",
+                "value": "={{ 'Bearer ' + ($node['Feishu Tenant Token1'].json.body?.tenant_access_token || $node['Feishu Tenant Token1'].json.tenant_access_token || $node['Feishu Tenant Token1'].json.data?.tenant_access_token || '') }}"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ { receive_id: $node[\"Parse Feishu Event1\"].json.open_id, msg_type: 'interactive', content: $json.feishuInteractiveContent } }}",
+          "options": {
+            "response": {}
+          }
+        },
+        "id": "2edd88a4-7e7b-4b3b-a4a2-64edb4de175f",
+        "name": "Feishu Send Message1",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4,
+        "position": [
+          1040,
+          -112
+        ]
+      },
+      {
+        "parameters": {
+          "respondWith": "json",
+          "responseBody": "={\"ok\": true}",
+          "options": {}
+        },
+        "id": "479a5d40-5685-4ded-bec3-6803b6593451",
+        "name": "Respond OK1",
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1,
+        "position": [
+          1264,
+          -112
+        ]
+      },
+      {
+        "parameters": {
+          "functionCode": "const kind = $node[\"Parse Feishu Event1\"].json.kind;\nconst err = $node[\"Parse Feishu Event1\"].json.error || '请求未通过校验';\nreturn [{ json: { errorText: err, kind } }];"
+        },
+        "id": "12dd6632-7eec-4697-bf38-2ea958f841d4",
+        "name": "Build Error1",
+        "type": "n8n-nodes-base.function",
+        "typeVersion": 1,
+        "position": [
+          -528,
+          80
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Authorization",
+                "value": "={{ 'Bearer ' + ($node['Feishu Tenant Token1'].json.body?.tenant_access_token || $node['Feishu Tenant Token1'].json.tenant_access_token || $node['Feishu Tenant Token1'].json.data?.tenant_access_token || '') }}"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ { receive_id: $node[\"Parse Feishu Event1\"].json.open_id, msg_type: 'text', content: JSON.stringify({ text: $json.errorText }) } }}",
+          "options": {
+            "response": {}
+          }
+        },
+        "id": "43066b2c-31e7-41e2-8680-004adffcedc6",
+        "name": "Feishu Send Error1",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4,
+        "position": [
+          -304,
+          80
+        ]
+      },
+      {
+        "parameters": {
+          "respondWith": "json",
+          "responseBody": "={\"ok\": true}",
+          "options": {}
+        },
+        "id": "3ffed191-1cfa-4b32-86db-19a1a078a501",
+        "name": "Respond OK (Rejected)1",
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1,
+        "position": [
+          -80,
+          80
+        ]
+      },
+      {
+        "parameters": {
+          "respondWith": "json",
+          "responseBody": "={{ JSON.stringify({ \"msg\": \"success\" }) }}",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1.4,
+        "position": [
+          -1200,
+          -16
+        ],
+        "id": "cfb226e6-19d3-49fe-ac5d-35718cf59ec0",
+        "name": "Respond Event ACK (Early)"
+      }
+    ],
+    "pinData": {},
+    "connections": {
+      "Feishu Webhook1": {
+        "main": [
+          [
+            {
+              "node": "Parse Feishu Event1",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Parse Feishu Event1": {
+        "main": [
+          [
+            {
+              "node": "IF Verification1",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "IF Verification1": {
+        "main": [
+          [
+            {
+              "node": "Respond Event ACK (Early)",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Respond Challenge1",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Feishu Tenant Token1": {
+        "main": [
+          [
+            {
+              "node": "IF OK1",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "IF OK1": {
+        "main": [
+          [
+            {
+              "node": "Set Input1",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Build Error1",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Set Input1": {
+        "main": [
+          [
+            {
+              "node": "需求解析1",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "需求解析1": {
+        "main": [
+          [
+            {
+              "node": "解析JSON-需求1",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "解析JSON-需求1": {
+        "main": [
+          [
+            {
+              "node": "深度技术分析1",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "深度技术分析1": {
+        "main": [
+          [
+            {
+              "node": "解析JSON-分析1",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "解析JSON-分析1": {
+        "main": [
+          [
+            {
+              "node": "生成报告1",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "生成报告1": {
+        "main": [
+          [
+            {
+              "node": "格式化输出1",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "格式化输出1": {
+        "main": [
+          [
+            {
+              "node": "组装飞书卡片1",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "组装飞书卡片1": {
+        "main": [
+          [
+            {
+              "node": "Feishu Send Message1",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Feishu Send Message1": {
+        "main": [
+          [
+            {
+              "node": "Respond OK1",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Build Error1": {
+        "main": [
+          [
+            {
+              "node": "Feishu Send Error1",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Feishu Send Error1": {
+        "main": [
+          [
+            {
+              "node": "Respond OK (Rejected)1",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Respond Event ACK (Early)": {
+        "main": [
+          [
+            {
+              "node": "Feishu Tenant Token1",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "active": true,
+    "settings": {
+      "executionOrder": "v1"
+    },
+    "versionId": "0ba5fe11-b625-4913-948f-29c9d6582017",
+    "meta": {
+      "instanceId": "8251c294f204b44708a99c2007d1ab242018c9c33b2aade4af9cda153a61d050"
+    },
+    "id": "TmPiD2ZFL52HflXK",
+    "tags": []
+  }
